@@ -20,7 +20,6 @@ import math
 from matplotlib.collections import LineCollection
 from matplotlib import colors 
 import matplotlib
-from pomegranate import *
 from .statbib import Chi2Fit
 from .Fingerprint_functions import *
 from scipy import stats

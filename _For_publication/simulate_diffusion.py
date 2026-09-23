@@ -3,7 +3,9 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 import datetime
-from ../deepspt_src import *
+import sys
+sys.path.append('../')
+from deepspt_src import *
 
 """Generate a simulated data """
 

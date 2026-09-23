@@ -75,14 +75,6 @@ pip install iminuit==2.11.0
 
 Note Windows 11 users may need to relax tensorflow-io-gcs-filesystem to require no version
 
-As fifth option:
-
-conda env create -f DeepSPT_simple.yml 
-conda activate DeepSPT
-
-python -m pip install "setuptools<65" --no-cache-dir
-python -m pip install --no-cache-dir "probfit==1.2.0"
-python -m pip install --no-cache-dir "iminuit==2.11.0"
 
 ```
 DeepSPT modules and additional/helpful functions are contained in the `deepspt_src` folder.
@@ -136,8 +128,6 @@ https://erda.ku.dk/archives/804ea1ea88f340b79ada3e57141a6d6e/published-archive.h
 
 ## Instructions for DeepSPT application - GUI
 In this repository you will find the "DeepSPT_GUI_manual.pdf", providing detailed insturcitons on how the applciation of DeepSPT - GUI should be used.
-
-Link to download GUI executables: https://erda.ku.dk/archives/a15cdc35bfd774d4255491c154f41fe5/published-archive.html
   
 ### Contact
 

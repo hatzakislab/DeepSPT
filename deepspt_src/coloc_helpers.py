@@ -6,7 +6,7 @@ from tqdm import tqdm
 import pickle 
 import pandas as pd
 import similaritymeasures
-from utils.helper_functions import create_fingerprint_track, find_segments
+from .deepspt_helper_functions import create_fingerprint_track, find_segments
 import datetime
 from collections import defaultdict
 
@@ -37,8 +37,8 @@ def find_nearest_coloc(tracks, track_frames, coloc_tracks, coloc_frames,
         frames = track_frames[i]
         for j, c in enumerate(coloc_tracks):
             if len(np.intersect1d(frames,coloc_frames[j]))>0:
-                track_idx_intersect = np.in1d(frames,coloc_frames[j])
-                coloc_idx_intersect = np.in1d(coloc_frames[j],frames)
+                track_idx_intersect = np.isin(frames,coloc_frames[j])
+                coloc_idx_intersect = np.isin(coloc_frames[j],frames)
                 d = squared_dist_intersect(p,c,track_idx_intersect,coloc_idx_intersect)
                 close = np.where(d<threshold, 1, 0)
                 if np.sum(close)>min_coloc_len:

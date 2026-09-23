@@ -1,0 +1,19 @@
+# Extra pip requirements for reproducing the paper's figures/analyses
+# (_For_publication/, Unet_mlflow_utils/, deepspt_mlflow_utils/, and the
+# usage_example*/tester/test scripts at the repo root).
+#
+# Install after requirements.txt:
+#   pip install -r requirements.txt
+#   pip install -r requirements_publication.txt
+#
+# Not needed for the core deepspt_src library itself.
+mlflow
+optuna
+imbalanced-learn
+umap-learn
+scikit-image
+tifffile
+networkx
+alphashape
+pygel3d
+trimesh

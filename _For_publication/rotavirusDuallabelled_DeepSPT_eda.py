@@ -41,7 +41,7 @@ from joblib import Parallel, delayed
 import sys
 sys.path.append('../')
 from deepspt_src import *
-from utils.coloc_helpers import *
+from deepspt_src.coloc_helpers import *
 
 
 def use_file(file, ch_cam_name='ch488nmCamB'):

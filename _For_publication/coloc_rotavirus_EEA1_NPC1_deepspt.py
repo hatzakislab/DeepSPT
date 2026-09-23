@@ -11,7 +11,7 @@ import sys
 sys.path.append('../')
 from deepspt_src import (add_features, load_3D_data, curate_3D_data_to_tracks, 
                   handle_compound_tracks, fuse_tracks, flatten_list)
-from utils.coloc_helpers import *
+from deepspt_src.coloc_helpers import *
 from glob import glob
 import time 
 from joblib import Parallel, delayed

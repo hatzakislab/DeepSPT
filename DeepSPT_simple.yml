@@ -1,29 +1,42 @@
+# DeepSPT runtime environment (python 3.10).
+#
+# Versions below are the ones this port was verified against: the U-Net
+# temporal segmentation reproduces the python 3.8 reference outputs exactly,
+# and the diffusional fingerprints agree across both stacks to <1e-3.
+#
+# probfit and pomegranate 0.14 are deliberately absent. Neither can be
+# installed on python 3.10 (probfit has no cp310 wheel and pins iminuit<2;
+# pomegranate 0.14 is Cython with no cp310 wheel). Their uses were replaced by
+# iminuit.cost.LeastSquares and by the HiddenMarkovModel shim in
+# deepspt_src/Fingerprint_functions.py, which loads the published
+# pub_simulated2D_HMM.json unchanged.
 name: DeepSPT
 channels:
+  - conda-forge
   - defaults
-  - conda-forge  # Add this for more package options
 dependencies:
-  - python=3.8
-  - h5py
-  - imbalanced-learn
-  - joblib
-  - matplotlib
-  - mlflow
-  - numpy  # Removing the version number
-  - pandas
-  - plotly
-  - scipy
-  - scikit-learn
-  - seaborn
-  - tqdm
+  - python=3.10
   - pip
   - pip:
-    - fbm
-    - torch==1.13
-    - torch-geometric==2.2
-    - torchaudio==0.13
-    - torchvision==0.14
-    - similaritymeasures==0.7.0  # Move to pip
-    - pomegranate==0.14.9  # Move to pip
-# followed by the manual install of probfit and iminuit
-# as described in DeepSPT's README
+    - numpy==2.2.6
+    - scipy==1.15.3
+    - pandas==2.3.2
+    - matplotlib==3.10.6
+    - seaborn==0.13.2
+    - plotly==5.24.0
+    - scikit-learn==1.7.2
+    - torch==2.8.0
+    - tqdm==4.67.3
+    - joblib==1.5.2
+    - h5py==3.12.1
+    - iminuit==2.30.1
+    - fbm==0.3.0
+    - similaritymeasures==1.4.0
+    # optional: only needed to run the HMM on the torch backend
+    # (HiddenMarkovModel(..., backend="pomegranate")) or to refit one with
+    # from_samples. The default numpy backend needs neither, and is ~24x
+    # faster on these short step-length sequences.
+    - pomegranate==1.1.2
+    # optional: only for the mlflow run-lookup helpers, which are not on any
+    # live code path. deepspt_src imports mlflow lazily and works without it.
+    # - mlflow

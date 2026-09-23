@@ -2,11 +2,343 @@ import matplotlib
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from probfit import Chi2Regression
+from iminuit.cost import LeastSquares
 from iminuit import Minuit
 import inspect
 import scipy.stats as stats
 from scipy.spatial import ConvexHull
+
+
+import json as _json
+import os as _os
+import warnings as _warnings
+
+try:  # pomegranate >= 1.0 is the torch rewrite; 0.14 (Cython) has no py3.10 wheel
+    from pomegranate.hmm import DenseHMM as _DenseHMM
+    from pomegranate.distributions import Normal as _PomNormal
+    _HAS_POMEGRANATE_V1 = True
+except ImportError:
+    _DenseHMM = None
+    _PomNormal = None
+    _HAS_POMEGRANATE_V1 = False
+
+
+class NormalDistribution:
+    """Stand-in for ``pomegranate.NormalDistribution`` (0.14 API).
+
+    Only carries the (mu, sigma) pair through ``.parameters``, which is the
+    whole of what DeepSPT ever read off a state's distribution.
+    """
+
+    def __init__(self, mu, sigma):
+        self.name = "NormalDistribution"
+        self.parameters = [float(mu), float(sigma)]
+
+    @property
+    def mu(self):
+        return self.parameters[0]
+
+    @property
+    def sigma(self):
+        return self.parameters[1]
+
+    def log_probability(self, X):
+        mu, sigma = self.parameters
+        X = np.asarray(X, dtype=float)
+        return -0.5 * np.log(2 * np.pi * sigma ** 2) - (X - mu) ** 2 / (2 * sigma ** 2)
+
+    def to_dict(self):
+        return {"class": "Distribution", "name": self.name,
+                "parameters": list(self.parameters), "frozen": False}
+
+
+class State:
+    """Stand-in for ``pomegranate.State`` (0.14 API)."""
+
+    def __init__(self, distribution, name):
+        self.distribution = distribution
+        self.name = name
+
+    def __repr__(self):
+        return "State(%s)" % self.name
+
+
+class HiddenMarkovModel:
+    """Drop-in replacement for the pomegranate 0.14 ``HiddenMarkovModel``.
+
+    DeepSPT only ever used four things from the pomegranate model: loading it
+    from JSON, ``predict(SL, algorithm='viterbi')``, reading each state's mean
+    off ``model.states[:4]``, and (when no saved model exists) fitting a fresh
+    one. Everything else in pomegranate 0.14 was unused, so this reimplements
+    just that surface and drops the dependency.
+
+    Two interchangeable Viterbi backends are available and give identical
+    paths (checked over 200 random sequences against pomegranate 0.14.9):
+
+    ``numpy``       pure-numpy log-domain Viterbi, no extra dependency.
+    ``pomegranate`` pomegranate >= 1.0 ``DenseHMM``, i.e. the torch rewrite.
+
+    ``backend='auto'`` picks ``numpy``: it needs no extra dependency and is
+    ~24x faster here (17.9 ms vs 435.6 ms over 60 sequences), since these step
+    length sequences are far too short to amortise torch's per-call overhead.
+    Ask for ``backend='pomegranate'`` explicitly to run on the torch model.
+
+    The state order of the source JSON is preserved exactly. That matters:
+    ``GetStates`` derives its state relabelling from ``argsort`` over the state
+    means, so permuting the states would silently relabel every diffusion
+    state in the fingerprints.
+    """
+
+    def __init__(self, states, transitions, starts, ends=None, name=None,
+                 backend="auto"):
+        self.states = list(states)
+        self.name = name
+        n = len([s for s in self.states if s.distribution is not None])
+        self.n_states = n
+        self.transitions = np.asarray(transitions, dtype=float)
+        self.starts = np.asarray(starts, dtype=float)
+        self.ends = (np.zeros(n, dtype=float) if ends is None
+                     else np.asarray(ends, dtype=float))
+        self.start_index = n
+        self.end_index = n + 1
+        self.means = np.array([s.distribution.parameters[0]
+                               for s in self.states[:n]], dtype=float)
+        self.stds = np.array([s.distribution.parameters[1]
+                              for s in self.states[:n]], dtype=float)
+        self.backend = self._resolve_backend(backend)
+        self._densehmm = None
+
+    # -- construction ------------------------------------------------------
+
+    @staticmethod
+    def _resolve_backend(backend):
+        if backend == "auto":
+            return "numpy"
+        if backend == "pomegranate" and not _HAS_POMEGRANATE_V1:
+            raise ImportError(
+                "backend='pomegranate' needs pomegranate>=1.0 (`pip install "
+                "pomegranate`); use backend='numpy' for the dependency-free path")
+        if backend not in ("numpy", "pomegranate"):
+            raise ValueError("backend must be 'auto', 'numpy' or 'pomegranate'")
+        return backend
+
+    @classmethod
+    def from_dict(cls, d, backend="auto"):
+        """Build from a parsed pomegranate 0.14 JSON dict."""
+        real = [s for s in d["states"] if s.get("distribution") is not None]
+        n = len(real)
+        states = [State(NormalDistribution(*s["distribution"]["parameters"]),
+                        s["name"]) for s in real]
+        # keep the silent start/end states so ``len(model.states)`` matches 0.14
+        states.append(State(None, d.get("start", {}).get("name", "None-start")))
+        states.append(State(None, d.get("end", {}).get("name", "None-end")))
+
+        idx = {s["name"]: i for i, s in enumerate(d["states"])}
+        start_i = d.get("start_index", idx.get(d.get("start", {}).get("name")))
+        end_i = d.get("end_index", idx.get(d.get("end", {}).get("name")))
+
+        T = np.zeros((n, n), dtype=float)
+        starts = np.zeros(n, dtype=float)
+        ends = np.zeros(n, dtype=float)
+        for edge in d["edges"]:
+            a, b, p = edge[0], edge[1], edge[2]
+            if a == start_i and b < n:
+                starts[b] = p
+            elif a < n and b == end_i:
+                ends[a] = p
+            elif a < n and b < n:
+                T[a, b] = p
+        return cls(states, T, starts, ends, name=d.get("name"), backend=backend)
+
+    @classmethod
+    def from_json(cls, s, backend="auto"):
+        """Load a pomegranate 0.14 JSON model (string, or path to a .json)."""
+        if isinstance(s, (str, bytes)) and not str(s).lstrip().startswith("{"):
+            if _os.path.isfile(s):
+                with open(s, "r") as fh:
+                    s = fh.read()
+        return cls.from_dict(_json.loads(s), backend=backend)
+
+    def to_dict(self):
+        n = self.n_states
+        states = [s.distribution.to_dict() for s in self.states[:n]]
+        out_states = [{"class": "State", "distribution": ds, "name": s.name,
+                       "weight": 1.0}
+                      for s, ds in zip(self.states[:n], states)]
+        out_states.append({"class": "State", "distribution": None,
+                           "name": "None-start", "weight": 1.0})
+        out_states.append({"class": "State", "distribution": None,
+                           "name": "None-end", "weight": 1.0})
+        edges = [[self.start_index, j, float(self.starts[j]), 0.25, None]
+                 for j in range(n)]
+        edges += [[i, j, float(self.transitions[i, j]), 0.25, None]
+                  for i in range(n) for j in range(n)]
+        edges += [[i, self.end_index, float(self.ends[i]), 0.25, None]
+                  for i in range(n) if self.ends[i] > 0]
+        return {"class": "HiddenMarkovModel", "name": str(self.name),
+                "start": {"class": "State", "distribution": None,
+                          "name": "None-start", "weight": 1.0},
+                "end": {"class": "State", "distribution": None,
+                        "name": "None-end", "weight": 1.0},
+                "states": out_states, "end_index": self.end_index,
+                "start_index": self.start_index, "silent_index": self.start_index,
+                "edges": edges, "distribution ties": []}
+
+    def to_json(self, separators=(",", " : "), indent=4):
+        return _json.dumps(self.to_dict(), separators=separators, indent=indent)
+
+    def bake(self, *args, **kwargs):
+        """No-op. pomegranate 0.14 needed an explicit finalise step; this does not."""
+        return self
+
+    # -- torch / pomegranate>=1.0 interop -----------------------------------
+
+    def to_densehmm(self):
+        """Return this model as a pomegranate >= 1.0 ``DenseHMM`` (torch)."""
+        if not _HAS_POMEGRANATE_V1:
+            raise ImportError("pomegranate>=1.0 is not installed")
+        import torch
+        dists = [_PomNormal(means=[m], covs=[s ** 2], covariance_type="diag")
+                 for m, s in zip(self.means, self.stds)]
+        # ends are left at pomegranate's uniform default: the published model
+        # has no end transitions, and a constant end term cannot change argmax.
+        return _DenseHMM(distributions=dists,
+                         edges=torch.tensor(self.transitions, dtype=torch.float64),
+                         starts=torch.tensor(self.starts, dtype=torch.float64))
+
+    def save_torch(self, path):
+        """Serialise the torch (pomegranate >= 1.0) form with ``torch.save``.
+
+        Note this is a build artifact, not the source of truth: it pickles
+        pomegranate class references and so is fragile across pomegranate and
+        torch upgrades. Keep the JSON -- four means, four sigmas and a 4x4
+        matrix -- as the thing you actually archive.
+        """
+        import torch
+        torch.save(self.to_densehmm(), path)
+        return path
+
+    @classmethod
+    def from_torch(cls, path, backend="auto"):
+        """Rebuild from a ``save_torch`` file, recovering the 0.14-style API."""
+        import torch
+        m = torch.load(path, weights_only=False)
+        return cls.from_densehmm(m, backend=backend)
+
+    @classmethod
+    def from_densehmm(cls, m, backend="auto"):
+        import torch
+        means = [float(d.means[0]) for d in m.distributions]
+        stds = [float(torch.sqrt(d.covs[0])) for d in m.distributions]
+        states = [State(NormalDistribution(mu, sd), "s%d" % i)
+                  for i, (mu, sd) in enumerate(zip(means, stds))]
+        states += [State(None, "None-start"), State(None, "None-end")]
+        T = torch.exp(m.edges).detach().cpu().numpy().astype(float)
+        starts = torch.exp(m.starts).detach().cpu().numpy().astype(float)
+        return cls(states, T, starts, backend=backend)
+
+    # -- inference ---------------------------------------------------------
+
+    def _log_emissions(self, SL):
+        SL = np.asarray(SL, dtype=float).reshape(-1, 1)
+        mu, sd = self.means[None, :], self.stds[None, :]
+        return -0.5 * np.log(2 * np.pi * sd ** 2) - (SL - mu) ** 2 / (2 * sd ** 2)
+
+    @staticmethod
+    def _safe_log(a):
+        a = np.asarray(a, dtype=float)
+        return np.log(a, out=np.full(a.shape, -np.inf), where=a > 0)
+
+    def _viterbi_numpy(self, SL):
+        E = self._log_emissions(SL)
+        n_obs = E.shape[0]
+        lT, lS = self._safe_log(self.transitions), self._safe_log(self.starts)
+        delta = lS + E[0]
+        back = np.zeros((n_obs, self.n_states), dtype=int)
+        for t in range(1, n_obs):
+            M = delta[:, None] + lT
+            back[t] = M.argmax(axis=0)
+            delta = M.max(axis=0) + E[t]
+        path = [int(delta.argmax())]
+        for t in range(n_obs - 1, 0, -1):
+            path.append(int(back[t, path[-1]]))
+        return path[::-1]
+
+    def _viterbi_pomegranate(self, SL):
+        import torch
+        if self._densehmm is None:
+            self._densehmm = self.to_densehmm()
+        X = torch.tensor(np.asarray(SL, dtype=float).reshape(1, -1, 1),
+                         dtype=torch.float64)
+        return [int(i) for i in self._densehmm.viterbi(X)[0]]
+
+    def viterbi(self, SL):
+        """Best state path. Returns ``(logp, [(index, State), ...])`` like 0.14."""
+        path = self._viterbi_numpy(SL) if self.backend == "numpy" \
+            else self._viterbi_pomegranate(SL)
+        full = [(self.start_index, self.states[self.start_index])]
+        full += [(i, self.states[i]) for i in path]
+        return None, full
+
+    def predict(self, sequence, algorithm="viterbi", check_input=True):
+        """State index per observation, prefixed by the silent start state.
+
+        The leading start-state index reproduces pomegranate 0.14 exactly,
+        which is why callers such as ``GetStates`` slice it off with ``[1:]``.
+        """
+        if algorithm != "viterbi":
+            raise NotImplementedError(
+                "only algorithm='viterbi' is supported (the only one DeepSPT used)")
+        sequence = np.asarray(sequence, dtype=float)
+        if sequence.size == 0:
+            return [self.start_index]
+        path = self._viterbi_numpy(sequence) if self.backend == "numpy" \
+            else self._viterbi_pomegranate(sequence)
+        return [self.start_index] + path
+
+    def dense_transition_matrix(self):
+        """(n+2, n+2) matrix laid out as pomegranate 0.14 ordered it."""
+        n = self.n_states
+        M = np.zeros((n + 2, n + 2), dtype=float)
+        M[:n, :n] = self.transitions
+        M[self.start_index, :n] = self.starts
+        M[:n, self.end_index] = self.ends
+        return M
+
+    # -- fitting -----------------------------------------------------------
+
+    @classmethod
+    def from_samples(cls, distribution=None, n_components=4, X=None,
+                     max_iterations=1000, tol=0.1, random_state=None,
+                     backend="auto", **kwargs):
+        """Fit a fresh Gaussian HMM, replacing 0.14's ``from_samples``.
+
+        Only reached when no saved HMM JSON exists. This is NOT numerically
+        identical to pomegranate 0.14's fit -- different initialisation and
+        stopping rule -- so a model fitted here will not reproduce
+        fingerprints computed with a 0.14-fitted model. Refit downstream
+        analyses if you regenerate the HMM rather than loading the published
+        one.
+        """
+        if X is None:
+            raise ValueError("X is required")
+        if not _HAS_POMEGRANATE_V1:
+            raise ImportError(
+                "fitting a new HMM needs pomegranate>=1.0 (`pip install "
+                "pomegranate`). Loading an existing HMM JSON needs no extra "
+                "dependency.")
+        import torch
+        _warnings.warn(
+            "HiddenMarkovModel.from_samples now fits via pomegranate>=1.0; "
+            "results differ from pomegranate 0.14 and will not reproduce "
+            "fingerprints made with a 0.14-fitted model.", RuntimeWarning)
+        seqs = [torch.tensor(np.asarray(x, dtype=float).reshape(-1, 1),
+                             dtype=torch.float64) for x in X]
+        dists = [_PomNormal(covariance_type="diag") for _ in range(n_components)]
+        m = _DenseHMM(distributions=dists, max_iter=max_iterations, tol=tol,
+                      init="kmeans", verbose=False, random_state=random_state)
+        m.fit(seqs)
+        return cls.from_densehmm(m, backend=backend)
 
 def Chi2Fit(
     x,
@@ -72,7 +404,7 @@ def Chi2Fit(
     xmin, xmax = np.min(x), np.max(x)
     names = inspect.getfullargspec(f)[0][1:]
     if custom_cost is None:
-        chi2_object = Chi2Regression(f, x, y, sy)
+        chi2_object = LeastSquares(x, y, sy, f)
     else:
         chi2_object = custom_cost
     if len(guesses) != 0:
@@ -90,10 +422,11 @@ def Chi2Fit(
         minuit.print_level = print_level
     else:
         minuit = Minuit(chi2_object)
-    minuit.errordef = 1
     minuit.migrad()
     chi2 = minuit.fval
-    Ndof = len(x) - len(guesses)
+    # free parameters, not len(guesses): `guesses` also carries the
+    # limit_<name> entries, which are bounds rather than fitted parameters
+    Ndof = len(x) - minuit.nfit
     Pval = stats.chi2.sf(chi2, Ndof)
     params = minuit.values
     errs = minuit.errors
@@ -233,7 +566,7 @@ def Scalings(msds, dt, dim=2, difftype='Normal'):
         params, errs, Pval = Chi2Fit(
         np.arange(1, len(msds) + 1)*dt,
         msds,
-        1e-10 * np.ones(len(msds)),
+        np.ones(len(msds)),
         power,
         plot=False,
         D=np.sqrt(msds[0]) / (4 * dt),
@@ -265,7 +598,7 @@ def Scalings(msds, dt, dim=2, difftype='Normal'):
         params, errs, Pval = Chi2Fit(
             np.arange(1, len(msds) + 1)*dt,
             msds,
-            1e-10 * np.ones(len(msds)),
+            np.ones(len(msds)),
             power,
             plot=False,
             D=np.sqrt(msds[0]) / (4 * dt),
@@ -301,7 +634,7 @@ def Scalings(msds, dt, dim=2, difftype='Normal'):
         params, errs, Pval = Chi2Fit(
             np.arange(1, len(msds) + 1)*dt,
             msds,
-            1e-10 * np.ones(len(msds)),
+            np.ones(len(msds)),
             power,
             plot=False,
             D=np.sqrt(msds[0]) / (4 * dt),

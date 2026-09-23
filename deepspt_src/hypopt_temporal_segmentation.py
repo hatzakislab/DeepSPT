@@ -166,8 +166,9 @@ class hypoptUNet(nn.Module):
             masked_ys = []
             masked_preds = []
             masked_argmaxs = []
+            device = next(self.parameters()).device
             for xb in tqdm(test_loader):
-                x, y = xb
+                x, y = xb[0].to(device), xb[1].to(device)
                 out = self.forward((x,y), inference=True, temperature=temperature)
                 _, _, _, masked_y, masked_pred, masked_argmax  = out
                 masked_ys.append(masked_y)

@@ -7,7 +7,24 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from probfit import Chi2Regression, BinnedLH, BinnedChi2, UnbinnedLH
+from iminuit.cost import LeastSquares
+
+
+def _probfit_removed(name, replacement):
+    def _raise(*args, **kwargs):
+        raise NotImplementedError(
+            "probfit.%s is unavailable: probfit ships no cp310 wheel and pins "
+            "iminuit<2, so it cannot be installed on python 3.10. Every call "
+            "site of %s in this module was already dead (it passed the "
+            "`pedantic=` kwarg that iminuit dropped in 2.0), so nothing was "
+            "ported. Rewrite against iminuit.cost.%s if you need it."
+            % (name, name, replacement))
+    return _raise
+
+
+BinnedLH = _probfit_removed("BinnedLH", "BinnedNLL")
+BinnedChi2 = _probfit_removed("BinnedChi2", "BinnedNLL")
+UnbinnedLH = _probfit_removed("UnbinnedLH", "UnbinnedNLL")
 from iminuit import Minuit
 import inspect
 import scipy.stats as stats
@@ -52,7 +69,7 @@ def format_value(value, decimals):
     Floats has 'decimals' number of decimals.
     """
 
-    if isinstance(value, (float, np.float)):
+    if isinstance(value, (float, np.floating)):
         return f"{value:.{decimals}f}"
     elif isinstance(value, (int, np.integer)):
         return f"{value:d}"
@@ -558,7 +575,7 @@ def GenTransHM(Npoints, f, F, G, args=None, C=1):
             # Generate random number in the interval
             x = F(np.random.uniform(low=0, high=C))
             # use the generated x to find ymax
-            y = np.infty
+            y = np.inf
             while y > G(x):
                 x = F(np.random.uniform(low=0, high=C))
                 y = np.random.uniform(low=0, high=f(x))
@@ -568,7 +585,7 @@ def GenTransHM(Npoints, f, F, G, args=None, C=1):
             # Generate random number in the interval
             x = F(np.random.uniform(low=0, high=C))
             # use the generated x to find ymax
-            y = np.infty
+            y = np.inf
             while y > G(x, *args):
                 x = F(np.random.uniform(low=0, high=C))
                 y = np.random.uniform(low=0, high=f(x))
@@ -960,13 +977,13 @@ def histogram(
         N = bins
         inputs = np.logspace(np.log10(xmin), np.log10(xmax), N)
         if normalize:
-            hist = np.histogram(data, bins=inputs, normed=True)
+            hist = np.histogram(data, bins=inputs, density=True)
             hist2 = np.histogram(data, bins=inputs)
         else:
             hist = np.histogram(data, bins=inputs)
     else:
         if normalize:
-            hist = np.histogram(data, bins=bins, range=(xmin, xmax), normed=True)
+            hist = np.histogram(data, bins=bins, range=(xmin, xmax), density=True)
             hist2 = np.histogram(data, bins=bins, range=(xmin, xmax))
         else:
             hist = np.histogram(data, bins=bins, range=(xmin, xmax))
@@ -1166,17 +1183,20 @@ def Chi2Fit(
     """
     xmin, xmax = np.min(x), np.max(x)
     names = inspect.getfullargspec(f)[0][1:]
-    chi2_object = Chi2Regression(f, x, y, sy)
+    chi2_object = LeastSquares(x, y, sy, f)
     if len(guesses) != 0:
-        minuit = Minuit(chi2_object, pedantic=False, **guesses, print_level=print_level)
+        minuit = Minuit(chi2_object, **guesses)
     else:
-        minuit = Minuit(chi2_object, pedantic=False, print_level=print_level)
+        minuit = Minuit(chi2_object)
+    minuit.print_level = print_level
     minuit.migrad()
     chi2 = minuit.fval
-    Ndof = len(x) - len(guesses)
+    # free parameters, not len(guesses): `guesses` also carries the
+    # limit_<name> entries, which are bounds rather than fitted parameters
+    Ndof = len(x) - minuit.nfit
     Pval = stats.chi2.sf(chi2, Ndof)
-    params = minuit.values.values()
-    errs = minuit.errors.values()
+    params = list(minuit.values)
+    errs = list(minuit.errors)
 
     if not exponential:
         dict = {"chi2": chi2, "Ndof": Ndof, "Pval": Pval}
@@ -1327,18 +1347,19 @@ def BChi2Fit(
     LLH: float
         -Log Likelihood for the fit
     """
-    names = inspect.getargspec(f)[0][1:]
+    names = inspect.getfullargspec(f)[0][1:]
     chi2_object = BinnedChi2(f, data, bound=bound)
     if len(guesses) != 0:
-        minuit = Minuit(chi2_object, pedantic=False, **guesses, print_level=print_level)
+        minuit = Minuit(chi2_object, **guesses)
     else:
-        minuit = Minuit(chi2_object, pedantic=False, print_level=print_level)
+        minuit = Minuit(chi2_object)
+    minuit.print_level = print_level
     minuit.migrad()
     chi2 = minuit.fval
     Ndof = bins - len(guesses)
     Pval = stats.chi2.sf(chi2, Ndof)
-    params = minuit.values.values()
-    errs = minuit.errors.values()
+    params = list(minuit.values)
+    errs = list(minuit.errors)
     if not exponential:
         dict = {"chi2": chi2, "Ndof": Ndof, "Pval": Pval}
         for n, p, py in zip(names, params, errs):
@@ -1459,19 +1480,20 @@ def BLLHFit(
     LLH: float
         -Log Likelihood for the fit
     """
-    names = inspect.getargspec(f)[0][1:]
+    names = inspect.getfullargspec(f)[0][1:]
     if extended:
         LLH_object = BinnedLH(f, data, bins=bins, bound=bound, extended=True)
     else:
         LLH_object = BinnedLH(f, data, bins=bins, bound=bound)
     if len(guesses) != 0:
-        minuit = Minuit(LLH_object, pedantic=False, **guesses, print_level=print_level)
+        minuit = Minuit(LLH_object, **guesses)
     else:
-        minuit = Minuit(LLH_object, pedantic=False, print_level=print_level)
+        minuit = Minuit(LLH_object)
+    minuit.print_level = print_level
     minuit.migrad()
     LLH = -minuit.fval
-    params = minuit.values.values()
-    errs = minuit.errors.values()
+    params = list(minuit.values)
+    errs = list(minuit.errors)
     if not exponential:
         dict = {"LLH": LLH}
         for n, p, py in zip(names, params, errs):
@@ -1576,16 +1598,17 @@ def LLHFit(
     pval: float
         -pvalue for the fit
     """
-    names = inspect.getargspec(f)[0][1:]
+    names = inspect.getfullargspec(f)[0][1:]
     LLH_object = UnbinnedLH(f, x, extended=extended)
     if len(guesses) != 0:
-        minuit = Minuit(LLH_object, pedantic=False, **guesses, print_level=print_level)
+        minuit = Minuit(LLH_object, **guesses)
     else:
-        minuit = Minuit(chi2_object, pedantic=False, print_level=print_level)
+        minuit = Minuit(LLH_object)
+    minuit.print_level = print_level
     minuit.migrad()
     LLH = -minuit.fval
-    params = minuit.values.values()
-    errs = minuit.errors.values()
+    params = list(minuit.values)
+    errs = list(minuit.errors)
 
     if not exponential:
         dict = {"LLH": LLH}
@@ -1998,8 +2021,8 @@ def calc_ROC_data(data1, data2, plot=True, savefig=""):
     # first we extract the entries (y values) and the edges of the histograms
     x_sig_centers, y_sig = data1
     x_bkg_centers, y_bkg = data2
-    y_sig = y_sig.astype(np.float)
-    y_bkg = y_bkg.astype(np.float)
+    y_sig = y_sig.astype(float)
+    y_bkg = y_bkg.astype(float)
     # Check that the two histograms have the same x edges:
     if np.array_equal(x_sig_centers, x_bkg_centers):
         x_centers = x_sig_centers
