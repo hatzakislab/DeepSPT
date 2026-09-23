@@ -4,79 +4,57 @@ DeepSPT, a deep learning framework to interpret the diffusional 2D or 3D tempora
 
 ![image](_Images/figure1.png)
 ### Citing
-https://www.biorxiv.org/content/10.1101/2023.11.16.567393v1
-Check updated status of the publication: https://scholar.google.dk/citations?user=og-0z0wAAAAJ&hl=da
+https://www.nature.com/articles/s41592-025-02665-8
+
+If you use DeepSPT, please cite:
+
+```bibtex
+@article{kaestelhansen2025deepspt,
+  title   = {Deep learning-assisted analysis of single-particle tracking for automated correlation between diffusion and function},
+  author  = {K{\ae}stel-Hansen, Jacob and de Sautu, Marilina and Saminathan, Anand and Scanavachi, Gustavo and Bango Da Cunha Correia, Ricardo F. and Nielsen, Annette Juma and Bleshøy, Sara Vogt and Tsolakidis, Konstantinos and Boomsma, Wouter and Kirchhausen, Tomas and Hatzakis, Nikos S.},
+  journal = {Nature Methods},
+  year    = {2025},
+  volume  = {22},
+  number  = {5},
+  pages   = {1091--1100},
+  doi     = {10.1038/s41592-025-02665-8}
+}
+```
 
 ### Usage
 #### Installation
-DeepSPT's installation guide utilize conda environment setup, therefore either miniconda or anaconda is required to follow the bellow installation guide.
- - Anaconda install guide: [here](https://www.anaconda.com/download)
- - Mini conda install guide: [here](https://docs.conda.io/en/latest/miniconda.html)
-
-DeepSPT is most easily setup in a new conda environment with dependecies, versions, and channels found in environment_droplet.yml or DeepSPT_simple.yml for a simple version of the environemnt file - Open Terminal / Commando prompt at wished location of DeepSPT and run the bash commands below, which creates the environemnt, downloades and installs packages, typically in less than 5 minutes. The code has been tested both on MacOS and Linux operating systems.
+DeepSPT targets **Python 3.10** and installs with plain `pip` — no conda, no manual `probfit`/`iminuit` pinning. `probfit` and `pomegranate` 0.14 (used by the original Python 3.8 environment) ship no Python 3.10 wheel, so `deepspt_src` was ported to `iminuit.cost.LeastSquares` and a self-contained `HiddenMarkovModel` implementation instead; nothing extra needs to be installed by hand.
 
 ```bash
-git clone git@github.com:JKaestelHansen/DeepSPT.git OR git clone https://github.com/JKaestelHansen/DeepSPT (potentially substitute JKaestelHansen with hatzakislab
+git clone git@github.com:hatzakislab/DeepSPT.git
 cd DeepSPT
-conda env create -f environment_droplet.yml 
-conda activate DeepSPT
-pip install probfit==1.2.0
-pip install iminuit==2.11.0
-
-As second option:
-git clone git@github.com:JKaestelHansen/DeepSPT.git OR git clone https://github.com/JKaestelHansen/DeepSPT (potentially substitute JKaestelHansen with hatzakislab
-cd DeepSPT
-conda env create -f environment_droplet_minimal.yml
-conda activate simpleDeepSPT
-pip install h5py==2.10.0
-pip install imagecodecs==2023.3.16
-pip install pomegranate==0.14.8
-pip install probfit==1.2.0
-pip install iminuit==2.11.0
-
-Note Windows 11 users may need to relax tensorflow-io-gcs-filesystem to require no version
-
-As third option (Thanks to Konstantinos Tsolakidis for contributing approach):
-Especially if running this on an Apple Macbook - M1/M2/M3 processor:
-
-git clone git@github.com:JKaestelHansen/DeepSPT.git OR git clone https://github.com/JKaestelHansen/DeepSPT (potentially substitute JKaestelHansen with hatzakislab
-cd DeepSPT
-
-conda env create -f DeepSPT_simple.yml 
-conda activate DeepSPT
-pip install probfit==1.2.0
-pip install iminuit==2.11.0
-
-As fourth option (Thanks to Konstantinos Tsolakidis for contributing approach):
-Especially if running this on an Apple Macbook - M1/M2/M3 processor:
-
-git clone git@github.com:JKaestelHansen/DeepSPT.git OR git clone https://github.com/JKaestelHansen/DeepSPT (potentially substitute JKaestelHansen with hatzakislab
-cd DeepSPT
-
-conda create --name simpleDeepSPT
-conda activate simpleDeepSPT
-conda install pip
-
-brew install HDF5 (install brew and update path, instructions here: "https://brew.sh/")
-(if the above command gives you an issue, run "arch -arm64 brew install hdf5")
-export HDF5_DIR=/opt/homebrew/Cellar/hdf5/(1.12.0_4 or your version)
-OR 
-export HDF5_DIR=/opt/homebrew/opt/hdf5 (if hdf5 is installed in the "/opt/homebrew/opt/hdf5" location, you have to check it out first)
-pip install --no-binary=h5py h5py
-
-conda env update --file environment_droplet_minimal.yml
-
-pip install csbdeep==0.7.4
-pip install cython==0.29.37
-conda install imagecodecs==2023.1.23
-pip install pomegranate==0.14.9
-pip install probfit==1.2.0
-pip install iminuit==2.11.0
-
-Note Windows 11 users may need to relax tensorflow-io-gcs-filesystem to require no version
-
-
+python3.10 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
+
+That installs everything `deepspt_src` needs. If you also want to run the paper-reproduction material in `_For_publication/`, `Unet_mlflow_utils/`, or `deepspt_mlflow_utils/`, install the extra dependencies those scripts need on top:
+
+```bash
+pip install -r requirements_publication.txt
+```
+
+If you prefer conda, `environment_droplet_minimal.yml` and `DeepSPT_simple.yml` are Python 3.10 equivalents of `requirements.txt` — same story, no manual `probfit`/`iminuit` install needed:
+
+```bash
+conda env create -f DeepSPT_simple.yml   # or environment_droplet_minimal.yml
+conda activate DeepSPT                   # or simpleDeepSPT, matching the file used
+```
+
+`environment_droplet.yml` is the **original, unported Python 3.8 environment** (kept for anyone who needs to reproduce results exactly as the paper's environment). It still requires the manual steps from the original install, since it predates the Python 3.10 port:
+
+```bash
+conda env create -f environment_droplet.yml
+conda activate DeepSPT
+pip install probfit==1.2.0
+pip install iminuit==2.11.0
+```
+
 DeepSPT modules and additional/helpful functions are contained in the `deepspt_src` folder.
 When running/building scripts in the DeepSPT directory modules are imported as:
 ```python
@@ -106,15 +84,18 @@ https://erda.ku.dk/archives/4c5adaaacc5c867f6450bcf89ec55a45/published-archive.h
 For models and data:
 https://erda.ku.dk/archives/804ea1ea88f340b79ada3e57141a6d6e/published-archive.html
 
+Trained model weights (`mlruns/`, ~1.6 GB) are **not** stored in this git repository — download them from one of the "models" links above and place the `mlruns/` folder at the repo root.
+
 
 ### Files
   - For_publication: Scripts as used in "Deep Learning Assisted Analysis of Single Particle Tracking for Automated Correlation Between Diffusion and Function". Folders with data and precomputed files are available, see Data availability.
   - _Images: Contains figure seen in Readme. Copyrighted as detailed in journal carrying "Deep learning assisted Single Particle Tracking for automated correlation between diffusion and function".
   - deepspt_mlflow_utils: MLflow helper functions
   - deepspt_src: Source code for DeepSPT
-  - environment_droplet.yml: requirements file for installation of virtual environment.
-  - environment_droplet_simple.yml: lighter version of environment_droplet.yml.
-  - DeepSPT_simple.yml: a light, easier to install version of the requirements file.
+  - environment_droplet.yml: original Python 3.8 conda environment (unported; needs the manual probfit/iminuit install above).
+  - environment_droplet_minimal.yml / DeepSPT_simple.yml: Python 3.10 conda environments, equivalent to requirements.txt.
+  - requirements.txt / requirements_publication.txt: Python 3.10 pip install, see Installation above.
+  - mlruns: pretrained model weights, not tracked in git — see Data section below for download links.
 
   - Pickle files found in this repo contain arrays of tracks as described in Data section in the Readme. These include both pickle files of trajectories from experimental data and simulated data.
   - Test pickle files for DeepSPT can be found under the _Data folder. The pickle (.pkl) files shape following the above mentioned (see line 81) shape and order.
